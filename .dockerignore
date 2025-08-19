@@ -1,0 +1,4 @@
+# Ignore CI, Docker and documentation specific files when building an image.
+/.gitlab-ci.yaml
+/Dockerfile
+/README

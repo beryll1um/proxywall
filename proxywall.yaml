@@ -1,0 +1,10 @@
+---
+nfso80:
+  listen_url: tcp://0.0.0.0:3128
+  dial_url: socks5://username:password@example.com:1080
+  rdns:
+    redis_mode: standalone
+    redis_url: redis://localhost:6379/0
+    forced: true
+
+# vim: set ts=2 sw=2 expandtab:
