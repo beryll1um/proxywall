@@ -3,7 +3,6 @@ package nfso80
 import (
 	"context"
 	"fmt"
-	"io"
 	"net"
 
 	"github.com/redis/go-redis/v9"
@@ -17,7 +16,7 @@ import (
 // to implement Server Handler interface.
 type Handler struct {
 	// Helps lighten a shady areas of this mysterious behavior a bit.
-	Logger logrus.Entry
+	Logger *logrus.Entry
 	// Contains a pointer to a managed Redis object, which can be either
 	// a cluster or a standalone instance.
 	Resc redis.Cmdable
@@ -38,6 +37,7 @@ func (h Handler) Serve(conn net.Conn, dialer proxy.Dialer) {
 		return
 	}
 
+	// For debugging it is important to see active connections.
 	h.Logger.Trace("connection accepted")
 
 	// To access the socket file descriptor we need a raw network connection.
@@ -94,29 +94,12 @@ func (h Handler) Serve(conn net.Conn, dialer proxy.Dialer) {
 	log := h.Logger.WithField("to", addr)
 	log.Trace("redirection tunnel is established")
 
-	// Copies from proxy to client connection and vice versa
-	// until one of them closes it.
-	finish := make(chan error)
-
-	go func() {
-		_, err := io.Copy(proxyConn, conn)
-		finish <- err
-	}()
-	go func() {
-		_, err := io.Copy(conn, proxyConn)
-		finish <- err
-	}()
-
-	// The first one should be nil (EOF under the hood),
-	// otherwise something unexpected happened.
-	if err := <-finish; err != nil {
+	// Create a tunnel between these two connections and wait for it to close.
+	if err := (u.Tunnel{Conn1:proxyConn, Conn2:conn}).Establish(); err != nil {
 		log.WithError(err).Error("connection lost due to error")
 	}
 
-	// The second one should be finished with error
-	// as it's destination is died.
-	<-finish
-
+	// It's useful to see when connection is done.
 	log.Trace("redirection tunnel is closed")
 }
 
