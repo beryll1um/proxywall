@@ -14,31 +14,25 @@ type Tunnel struct {
 	Conn2 net.Conn
 }
 
-func (t Tunnel) Establish() error {
-	// Copies from proxy to client connection and vice versa
-	// until one of them closes it.
-	finish := make(chan error)
+func (t Tunnel) Establish() {
+	// We need to somehow communicate with the original goroutine.
+	finish := make(chan struct{}, 2)
 
 	go func() {
-		_, err := io.Copy(t.Conn1, t.Conn2)
-		finish <- err
+		io.Copy(t.Conn1, t.Conn2)
+		finish <- struct{}{}
 	}()
 	go func() {
-		_, err := io.Copy(t.Conn2, t.Conn1)
-		finish <- err
+		io.Copy(t.Conn2, t.Conn1)
+		finish <- struct{}{}
 	}()
 
-	// The first one should be nil (EOF under the hood),
-	// otherwise something unexpected happened.
-	if err := <-finish; err != nil {
-		return err
-	}
-
-	// We need to wait for the second goroutine to complete,
-	// otherwise a leak will occur.
+	// Wait for at least one goroutine to finish.
 	<-finish
-
-	return nil
+	// We don't actually know which connection caused the connection to close,
+	// so to avoid playing with errors, let's just try to close both.
+	t.Conn1.Close()
+	t.Conn2.Close()
 }
 
 // vim: set ts=4 sw=4 noexpandtab:

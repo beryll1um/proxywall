@@ -8,5 +8,7 @@ nfso80:
     forced: true
 nat46:
   listen_url: tcp4://0.0.0.0:3129
+hfp:
+  listen_url: tcp://0.0.0.0:3130
 
 # vim: set ts=2 sw=2 expandtab:

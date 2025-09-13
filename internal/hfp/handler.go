@@ -1,8 +1,10 @@
-package nat46
+package hfp
 
 import (
+	"bufio"
 	"encoding/base64"
 	"fmt"
+	"errors"
 	"net"
 	"net/http"
 	"strings"
@@ -12,6 +14,36 @@ import (
 
 	u "github.com/beryll1um/proxywall/internal/utils"
 )
+
+// List of errors can be returned by module functions.
+var (
+	ErrProxyAuth = errors.New("hfp: Failed to authenticate with proxy server")
+)
+
+func httpTunnelAuth(conn net.Conn, url string, cred []byte) error {
+	// First we need to send the corresponding authentication request.
+	if _, err := fmt.Fprintf(conn,
+		"CONNECT %s HTTP/1.1\r\n" +
+		"Proxy-Authorization: Basic %s\r\n" +
+		"Host: %s\r\n\r\n",
+		url, base64.StdEncoding.EncodeToString(cred), url,
+	); err != nil {
+		return errors.New("failed to send HTTP request")
+	}
+
+	// Finally we need to wait for the sucessfull response.
+	reader := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(reader, nil)
+	if err != nil {
+		return errors.New("failed to receive HTTP response")
+	}
+	// Finally we need to wait for the sucessfull response.
+	if resp.StatusCode != http.StatusOK {
+		return ErrProxyAuth
+	}
+
+	return nil
+}
 
 // Represents the data structure that is instantiated
 // to implement Server Handler interface.
@@ -26,7 +58,7 @@ func (h *Handler) ServeHTTP(writer http.ResponseWriter, req *http.Request) {
 	// We can only accept HTTP CONNECT method since this is an HTTP tunnel.
 	if req.Method != http.MethodConnect {
 		writer.Header().Set("Allow", http.MethodConnect)
-		http.Error(writer, "Method is not allowed for NAT46 server",
+		http.Error(writer, "Method is not allowed for HFP server",
 			http.StatusMethodNotAllowed)
 		return
 	}
@@ -34,37 +66,43 @@ func (h *Handler) ServeHTTP(writer http.ResponseWriter, req *http.Request) {
 	// The username is required because it contains the source address.
 	creds := strings.Split(req.Header.Get("Proxy-Authorization"), " ")
 	if len(creds) != 2 || creds[0] != "Basic" {
-		writer.Header().Set("Proxy-Authenticate", "Basic realm=\"SrcIPv6\"")
+		writer.Header().Set("Proxy-Authenticate", "Basic realm=\"TargetHFP\"")
 		http.Error(writer, "Unauthorized connections is not allowed",
 			http.StatusProxyAuthRequired)
 		return
 	}
 
-	// Decode Bearer token and search for the username end.
-	userpass, err := base64.StdEncoding.DecodeString(creds[1])
-	delidx := strings.LastIndexByte(string(userpass), ':')
+	// Decode Bearer token and search for the destination address end.
+	target, err := base64.StdEncoding.DecodeString(creds[1])
+	delidx := strings.LastIndexByte(string(target), '@')
 	if err != nil || delidx == -1 {
 		http.Error(writer, "Wrong format of the Basic authentication token",
 			http.StatusUnauthorized)
 		return
 	}
 
-	// We also need to resolve this address and prove its validity.
-	localAddr, err := net.ResolveTCPAddr("tcp6", string(userpass[:delidx]))
-	if err != nil {
-		http.Error(writer, "Username should be an IPv6 source address",
-			http.StatusUnauthorized)
-		return
-	}
-
 	// Next we need to dial other end and establish connectivity.
-	dstConn, err := (&net.Dialer{LocalAddr: localAddr}).Dial("tcp", req.Host)
+	dstHost := string(target[delidx + 1:])
+	dstConn, err := net.Dial("tcp", dstHost)
 	if err != nil {
-		http.Error(writer, "Failed to dial target hostname",
+		http.Error(writer, "Failed to dial target destination",
 			http.StatusBadGateway)
 		return
 	}
 	defer dstConn.Close()
+
+	// Authenticate with HTTP proxy tunnel using CONNECT method protocol.
+	if err := httpTunnelAuth(dstConn, dstHost, target[:delidx]); err != nil {
+		switch err {
+		case ErrProxyAuth:
+			http.Error(writer, "Failed to authenticate with proxy server",
+				http.StatusUnauthorized)
+		default:
+			http.Error(writer, "Fauled to communicate with proxy server",
+				http.StatusBadGateway)
+		}
+		return
+	}
 
 	// Now we need to try to cast writer to hijacker. It may not work!
 	hj, ok := writer.(http.Hijacker)
@@ -92,9 +130,7 @@ func (h *Handler) ServeHTTP(writer http.ResponseWriter, req *http.Request) {
 	fmt.Fprintf(srcConn, "HTTP/%d.%d 200 OK\r\n\r\n", req.ProtoMajor,
 		req.ProtoMinor)
 
-	log := h.Logger.WithFields(logrus.Fields{
-		"to": req.Host, "from": localAddr.String(),
-	})
+	log := h.Logger.WithField("to", dstHost)
 	log.Trace("redirection tunnel is established")
 
 	// Create a tunnel between these two connections and wait for it to close.

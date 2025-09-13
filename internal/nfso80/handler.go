@@ -95,9 +95,7 @@ func (h Handler) Serve(conn net.Conn, dialer proxy.Dialer) {
 	log.Trace("redirection tunnel is established")
 
 	// Create a tunnel between these two connections and wait for it to close.
-	if err := (u.Tunnel{Conn1:proxyConn, Conn2:conn}).Establish(); err != nil {
-		log.WithError(err).Error("connection lost due to error")
-	}
+	u.Tunnel{Conn1:proxyConn, Conn2:conn}.Establish()
 
 	// It's useful to see when connection is done.
 	log.Trace("redirection tunnel is closed")

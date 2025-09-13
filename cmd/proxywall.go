@@ -12,6 +12,7 @@ import (
 	"github.com/goccy/go-yaml"
 	"golang.org/x/net/proxy"
 
+	"github.com/beryll1um/proxywall/internal/hfp"
 	"github.com/beryll1um/proxywall/internal/nat46"
 	"github.com/beryll1um/proxywall/internal/nfso80"
 
@@ -21,6 +22,7 @@ import (
 type Config struct {
 	NFSO80 *NFSO80Config `yaml:"nfso80,omitempty"`
 	NAT46 *NAT46Config `yaml:"nat46,omitempty"`
+	HFP *HFPConfig `yaml:"hfp,omitempty"`
 }
 
 type NFSO80Config struct {
@@ -36,6 +38,10 @@ type RDNSConfig struct {
 }
 
 type NAT46Config struct {
+	ListenUrl string `yaml:"listen_url"`
+}
+
+type HFPConfig struct {
 	ListenUrl string `yaml:"listen_url"`
 }
 
@@ -68,6 +74,7 @@ func main() {
 	}
 
 	if cfg.NFSO80 != nil {
+		var forceRDNS bool
 		var resc redis.Cmdable
 		// If the NFSO80 RDNS functionality is enabled,
 		// we need to connect Redis.
@@ -96,6 +103,7 @@ func main() {
 						"failed to establish Redis connectivity")
 				}
 			}
+			forceRDNS = cfg.NFSO80.RDNS.Forced
 		}
 
 		// Parse and bind proxy server listening address.
@@ -123,7 +131,7 @@ func main() {
 			Handler: nfso80.Handler{
 				Logger: log.WithField("server", "NFSO80"),
 				Resc: resc,
-				ForceRDNS: cfg.NFSO80.RDNS.Forced,
+				ForceRDNS: forceRDNS,
 			},
 			Dialer: nfso80Dialer,
 		}
@@ -174,6 +182,41 @@ func main() {
 			// Wait for rest of the hijacked connections to be finished.
 			// (unfortunately cannot be managed along with HTTP server)
 			nat46Handler.Wait()
+		}()
+	}
+
+	if cfg.HFP != nil {
+		// Parse and bind HTTP server listening address.
+		url, err := u.UrlBuilder{Scheme: "tcp"}.String(cfg.HFP.ListenUrl)
+		if err != nil {
+			log.WithError(err).Fatal("failed to configure HFP listener")
+		}
+		hfpListener, err := net.Listen(url.Scheme, url.Host)
+		if err != nil {
+			log.WithError(err).Fatal("failed to setup HFP listener")
+		}
+
+		// Serves and waits of hijacked HTTP connection tunnels.
+		hfpHandler := &hfp.Handler{
+			Logger: log.WithField("server", "HFP"),
+		}
+		// Instantiate and start serving HTTP server.
+		hfpServer := http.Server{Handler: hfpHandler}
+		go func() {
+			log.Info("starting HFP server on ", hfpListener.Addr())
+			err := hfpServer.Serve(hfpListener);
+			if err != http.ErrServerClosed {
+				log.WithError(err).Fatal("failed to serve HFP server")
+			}
+		}()
+		// Defer HTTP server shutdown after function completes.
+		defer func() {
+			if err := hfpServer.Shutdown(context.TODO()); err != nil {
+				log.WithError(err).Fatal("failed to shutdown HFP server")
+			}
+			// Wait for rest of the hijacked connections to be finished.
+			// (unfortunately cannot be managed along with HTTP server)
+			hfpHandler.Wait()
 		}()
 	}
 
