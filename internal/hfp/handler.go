@@ -3,8 +3,8 @@ package hfp
 import (
 	"bufio"
 	"encoding/base64"
-	"fmt"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"strings"
@@ -31,13 +31,12 @@ func httpTunnelAuth(conn net.Conn, url string, cred []byte) error {
 		return errors.New("failed to send HTTP request")
 	}
 
-	// Finally we need to wait for the sucessfull response.
-	reader := bufio.NewReader(conn)
-	resp, err := http.ReadResponse(reader, nil)
+	// Wait for the sucessfull response or return error.
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
 	if err != nil {
 		return errors.New("failed to receive HTTP response")
 	}
-	// Finally we need to wait for the sucessfull response.
+	// If the status code isn't OK, we need to return a proxy auth error.
 	if resp.StatusCode != http.StatusOK {
 		return ErrProxyAuth
 	}
@@ -55,14 +54,6 @@ type Handler struct {
 }
 
 func (h *Handler) ServeHTTP(writer http.ResponseWriter, req *http.Request) {
-	// We can only accept HTTP CONNECT method since this is an HTTP tunnel.
-	if req.Method != http.MethodConnect {
-		writer.Header().Set("Allow", http.MethodConnect)
-		http.Error(writer, "Method is not allowed for HFP server",
-			http.StatusMethodNotAllowed)
-		return
-	}
-
 	// The username is required because it contains the source address.
 	creds := strings.Split(req.Header.Get("Proxy-Authorization"), " ")
 	if len(creds) != 2 || creds[0] != "Basic" {
@@ -73,8 +64,8 @@ func (h *Handler) ServeHTTP(writer http.ResponseWriter, req *http.Request) {
 	}
 
 	// Decode Bearer token and search for the destination address end.
-	target, err := base64.StdEncoding.DecodeString(creds[1])
-	delidx := strings.LastIndexByte(string(target), '@')
+	auth, err := base64.StdEncoding.DecodeString(creds[1])
+	delidx := strings.LastIndexByte(string(auth), '@')
 	if err != nil || delidx == -1 {
 		http.Error(writer, "Wrong format of the Basic authentication token",
 			http.StatusUnauthorized)
@@ -82,7 +73,7 @@ func (h *Handler) ServeHTTP(writer http.ResponseWriter, req *http.Request) {
 	}
 
 	// Next we need to dial other end and establish connectivity.
-	dstHost := string(target[delidx + 1:])
+	dstHost := string(auth[delidx + 1:])
 	dstConn, err := net.Dial("tcp", dstHost)
 	if err != nil {
 		http.Error(writer, "Failed to dial target destination",
@@ -92,7 +83,7 @@ func (h *Handler) ServeHTTP(writer http.ResponseWriter, req *http.Request) {
 	defer dstConn.Close()
 
 	// Authenticate with HTTP proxy tunnel using CONNECT method protocol.
-	if err := httpTunnelAuth(dstConn, dstHost, target[:delidx]); err != nil {
+	if err := httpTunnelAuth(dstConn, req.Host, auth[:delidx]); err != nil {
 		switch err {
 		case ErrProxyAuth:
 			http.Error(writer, "Failed to authenticate with proxy server",
@@ -117,7 +108,7 @@ func (h *Handler) ServeHTTP(writer http.ResponseWriter, req *http.Request) {
 	h.wg.Add(1)
 	defer h.wg.Done()
 
-	// Finally, we can hijack source connection from HTTP engine.
+	// Now we can hijack source connection from HTTP engine.
 	srcConn, _, err := hj.Hijack()
 	if err != nil {
 		http.Error(writer, "Failed to hijack internal HTTP connection",
@@ -126,18 +117,49 @@ func (h *Handler) ServeHTTP(writer http.ResponseWriter, req *http.Request) {
 	}
 	defer srcConn.Close()
 
-	// According to the protocol we need to send 200 OK back.
-	fmt.Fprintf(srcConn, "HTTP/%d.%d 200 OK\r\n\r\n", req.ProtoMajor,
-		req.ProtoMinor)
+	// We need to create a logger here as it will be used in both cases.
+	log := h.Logger.WithFields(logrus.Fields{"to": req.Host, "via": dstHost})
 
-	log := h.Logger.WithField("to", dstHost)
-	log.Trace("redirection tunnel is established")
+	if req.Method == http.MethodConnect {
+		// According to the protocol we need to send 200 OK back.
+		fmt.Fprintf(srcConn, "HTTP/%d.%d 200 OK\r\n\r\n", req.ProtoMajor,
+			req.ProtoMinor)
 
-	// Create a tunnel between these two connections and wait for it to close.
-	u.Tunnel{Conn1: dstConn, Conn2: srcConn}.Establish()
+		log.Trace("redirection tunnel is established")
+		// Create a tunnel between these two connections and wait for it to close.
+		u.Tunnel{Conn1: dstConn, Conn2: srcConn}.Establish()
+		// It's useful to see when connection is done.
+		log.Trace("redirection tunnel is closed")
+	} else {
+		// Since we already hijacked connection, we can reuse the request.
+		req.Header.Set("Proxy-Authorization", "Basic " +
+			base64.StdEncoding.EncodeToString(auth[:delidx]))
 
-	// It's useful to see when connection is done.
-	log.Trace("redirection tunnel is closed")
+		// Send this HTTP request to the destination connection.
+		if err := req.Write(dstConn); err != nil {
+			log.Error("failed to send HTTP request to proxy endpoint")
+			return
+		}
+		log.Trace("HTTP request is forwarded to proxy endpoint")
+
+		// Wait for the successful response or log error.
+		resp, err := http.ReadResponse(bufio.NewReader(dstConn), req)
+		if err != nil {
+			log.Error("failed to receive HTTP response from proxy endpoint")
+			return
+		}
+		log.Trace("HTTP response was received from proxy endpoint")
+
+		// Keep-alive support is not currently implemented,
+		// close must be responded.
+		resp.Header.Set("Connection", "close")
+		// Forward response to the originator (source of the proxy connection).
+		if err := resp.Write(srcConn); err != nil {
+			log.Error("failed to forward HTTP response to originator")
+			return
+		}
+		log.Trace("HTTP response is forwarded to originator")
+	}
 }
 
 func (h *Handler) Wait() {
