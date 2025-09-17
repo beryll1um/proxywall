@@ -1,7 +1,9 @@
 ---
 nfso80:
   listen_url: tcp://0.0.0.0:3128
-  dial_url: socks5://username:password@example.com:1080
+  dial_timeout: 1s
+  socks5:
+    - socks5://username:password@example.com:1080
   rdns:
     redis_mode: standalone
     redis_url: redis://localhost:6379/0

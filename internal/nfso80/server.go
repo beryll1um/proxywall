@@ -25,11 +25,11 @@ const shutdownCheckInterval = 2 * time.Second
 type Server struct {
 	// Defines interface for the handler will be applied to server.
 	Handler interface {
-		Serve(conn net.Conn, dialer proxy.Dialer)
+		Serve(conn net.Conn, dialer proxy.ContextDialer)
 	}
 	// Contains dialer of the x/net library that allows to communicate
 	// with the proxy endpoint.
-	Dialer proxy.Dialer
+	Dialer proxy.ContextDialer
 	// Contains a boolean flag that indicates whether the server should
 	// be shutdown or not.
 	inShutdown atomic.Bool

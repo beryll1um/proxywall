@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 	"github.com/sirupsen/logrus"
@@ -17,6 +18,8 @@ import (
 type Handler struct {
 	// Helps lighten a shady areas of this mysterious behavior a bit.
 	Logger *logrus.Entry
+	// Defines timeout for the proxy connection.
+	DialTimeout time.Duration
 	// Contains a pointer to a managed Redis object, which can be either
 	// a cluster or a standalone instance.
 	Resc redis.Cmdable
@@ -25,7 +28,7 @@ type Handler struct {
 	ForceRDNS bool
 }
 
-func (h Handler) Serve(conn net.Conn, dialer proxy.Dialer) {
+func (h Handler) Serve(conn net.Conn, dialer proxy.ContextDialer) {
 	// It is extremely important to close the connection after completing
 	// the pass-through procedure.
 	defer conn.Close()
@@ -84,7 +87,11 @@ func (h Handler) Serve(conn net.Conn, dialer proxy.Dialer) {
 	}
 
 	addr := fmt.Sprintf("%s:%d", dst, sa.Port())
-	proxyConn, err := dialer.Dial("tcp", addr)
+	// Define context with a dial timeout.
+	ctx, cancel := context.WithTimeout(context.TODO(), h.DialTimeout)
+	defer cancel()
+	// Dial proxy endpoint with the specified timeout.
+	proxyConn, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		h.Logger.WithError(err).Error("failed to connect proxy")
 		return

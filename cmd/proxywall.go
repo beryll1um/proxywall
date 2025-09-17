@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"time"
 	"net"
 	"net/http"
 	"os"
@@ -10,7 +11,6 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/sirupsen/logrus"
 	"github.com/goccy/go-yaml"
-	"golang.org/x/net/proxy"
 
 	"github.com/beryll1um/proxywall/internal/hfp"
 	"github.com/beryll1um/proxywall/internal/nat46"
@@ -27,7 +27,8 @@ type Config struct {
 
 type NFSO80Config struct {
 	ListenUrl string `yaml:"listen_url"`
-	DialUrl string `yaml:"dial_url"`
+	DialTimeout time.Duration `yaml:"dial_timeout"`
+	SOCKS5 []string `yaml:"socks5"`
 	RDNS *RDNSConfig `yaml:"rdns,omitempty"`
 }
 
@@ -116,12 +117,8 @@ func main() {
 			log.WithError(err).Fatal("failed to setup NFSO80 listener")
 		}
 
-		// Parse and configure proxy dialer.
-		url, err = u.UrlBuilder{Scheme: "socks5"}.String(cfg.NFSO80.DialUrl)
-		if err != nil {
-			log.WithError(err).Fatal("failed to configure NFSO80 dialer")
-		}
-		nfso80Dialer, err := proxy.FromURL(url, proxy.Direct)
+		// Parse and setup proxy dialer.
+		nfso80Dialer, err := nfso80.NewDialer(cfg.NFSO80.SOCKS5)
 		if err != nil {
 			log.WithError(err).Fatal("failed to setup NFSO80 dialer")
 		}
@@ -130,6 +127,7 @@ func main() {
 		nfso80Server := nfso80.Server{
 			Handler: nfso80.Handler{
 				Logger: log.WithField("server", "NFSO80"),
+				DialTimeout: cfg.NFSO80.DialTimeout,
 				Resc: resc,
 				ForceRDNS: forceRDNS,
 			},
