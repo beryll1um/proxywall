@@ -89,7 +89,7 @@ func (h *Handler) ServeHTTP(writer http.ResponseWriter, req *http.Request) {
 			http.Error(writer, "Failed to authenticate with proxy server",
 				http.StatusUnauthorized)
 		default:
-			http.Error(writer, "Fauled to communicate with proxy server",
+			http.Error(writer, "Failed to communicate with proxy server",
 				http.StatusBadGateway)
 		}
 		return
@@ -118,7 +118,12 @@ func (h *Handler) ServeHTTP(writer http.ResponseWriter, req *http.Request) {
 	defer srcConn.Close()
 
 	// We need to create a logger here as it will be used in both cases.
-	log := h.Logger.WithFields(logrus.Fields{"to": req.Host, "via": dstHost})
+	log := h.Logger.WithFields(logrus.Fields{
+		"to": req.Host,
+		"via": dstHost,
+		// I don't think there can be an unknown remote address here.
+		"from": srcConn.RemoteAddr().String(),
+	})
 
 	if req.Method == http.MethodConnect {
 		// According to the protocol we need to send 200 OK back.

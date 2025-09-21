@@ -28,24 +28,26 @@ func NewDialer(endpoints []string) (*Dialer, error) {
 			return nil, errors.Join(
 				errors.New("failed to configure SOCKS5 dialer"), err)
 		}
-		child, err := proxy.FromURL(url, proxy.Direct)
+		childDialer, err := proxy.FromURL(url, proxy.Direct)
 		if err != nil {
 			return nil, errors.Join(
 				errors.New("failed to setup SOCKS5 dialer"), err)
 		}
-		ctxChild, ok := child.(proxy.ContextDialer)
+		childCtxDialer, ok := childDialer.(proxy.ContextDialer)
 		if !ok {
 			return nil, errors.New("failed to setup SOCKS5 context dialer")
 		}
-		dialer.children = append(dialer.children, ctxChild)
+		dialer.children = append(dialer.children, childCtxDialer)
 	}
 	return dialer, nil
 }
 
-func (d *Dialer) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+func (d *Dialer) DialContext(
+	ctx context.Context, network, addr string,
+) (net.Conn, error) {
 	// Select next dialer in the RR cycle.
-	childCtx := d.children[d.counter.Add(1) % int64(len(d.children))]
-	return childCtx.DialContext(ctx, network, addr)
+	childCtxDialer := d.children[d.counter.Add(1) % int64(len(d.children))]
+	return childCtxDialer.DialContext(ctx, network, addr)
 }
 
 // vim: set ts=4 sw=4 noexpandtab:
